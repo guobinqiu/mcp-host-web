@@ -1,13 +1,15 @@
-# MCP Host Web
+# MCP Host Web [第四课]
 
-把之前 MCP Host(命令行版) 改成Web版
+把 [MCP Host](https://github.com/guobinqiu/mcp-host) (命令行版) 改成 Web 版
 
-运行后端服务
+1. 运行后端服务
+
 ```
 cd backend && go run main.go
 ```
 
-运行前端服务
+2. 运行前端服务
+
 ```
 cd frontend && npm run serve
 ```
