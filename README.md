@@ -22,4 +22,4 @@ cd frontend && npm run serve
 
 ## TODO
 
-没有MCP的时候流式响应到前端很简单,但是带了MCP之后怎么做流式响应?因为llm返回tools也是流式的不好控制.
+- [ ] 没有MCP的时候流式响应到前端很简单,但是带了MCP之后怎么做流式响应?因为llm返回tools也是流式的不太好控制.
