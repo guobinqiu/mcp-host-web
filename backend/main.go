@@ -176,7 +176,7 @@ func (cc *ChatClient) ChatLoop(w http.ResponseWriter, r *http.Request) {
 		}
 
 		replyMsg := &chat.ChatMessage{}
-		replyMsg.Role = "assistant"
+		replyMsg.Role = openai.ChatMessageRoleAssistant
 		replyMsg.Content = response
 		if buf, err := proto.Marshal(replyMsg); err == nil {
 			ws.WriteMessage(websocket.BinaryMessage, buf)

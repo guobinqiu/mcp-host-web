@@ -1,7 +1,7 @@
 <template>
   <div id="app">
     <div v-for="(msg, index) in messages" :key="index">
-      {{ msg.role }}: {{ msg.content }}
+      <b>{{ msg.role }}:</b> {{ msg.content }}
     </div>
     <input v-model="text" placeholder="Say something..." @keyup.enter="sendMsg" />
   </div>
@@ -51,10 +51,9 @@ export default {
       };
     },
     sendMsg() {
-      this.messages.push({ role: 'user', content: this.text });
       if (!this.text.trim()) return;
-
-      const msg = this.ChatMessage.create({ role: 'user', content: this.text }); // 创建一个新的消息对象
+      this.messages.push({ role: 'user', content: this.text.trim() });
+      const msg = this.ChatMessage.create({ role: 'user', content: this.text.trim() }); // 创建一个新的消息对象
       const buffer = this.ChatMessage.encode(msg).finish(); // 将消息对象转换为二进制格式
       this.socket.send(buffer);
       this.text = '';
