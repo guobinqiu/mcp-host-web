@@ -167,7 +167,7 @@ func (cc *ChatClient) ChatLoop(w http.ResponseWriter, r *http.Request) {
 			log.Printf("Failed to unmarshal: %v", err)
 			continue
 		}
-		fmt.Println(recvMsg)
+		// fmt.Println(recvMsg)
 
 		response, err := cc.ProcessQuery(recvMsg.Content)
 		if err != nil {

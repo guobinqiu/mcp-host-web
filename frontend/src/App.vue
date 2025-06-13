@@ -52,8 +52,8 @@ export default {
     },
     sendMsg() {
       if (!this.text.trim()) return;
-      this.messages.push({ role: 'user', content: this.text.trim() });
-      const msg = this.ChatMessage.create({ role: 'user', content: this.text.trim() }); // 创建一个新的消息对象
+      this.messages.push({ role: 'user', content: this.text });
+      const msg = this.ChatMessage.create({ role: 'user', content: this.text }); // 创建一个新的消息对象
       const buffer = this.ChatMessage.encode(msg).finish(); // 将消息对象转换为二进制格式
       this.socket.send(buffer);
       this.text = '';
