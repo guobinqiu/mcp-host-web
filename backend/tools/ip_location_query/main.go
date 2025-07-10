@@ -38,7 +38,7 @@ func main() {
 
 	// Start the server
 	httpServer := server.NewStreamableHTTPServer(s)
-	if err := httpServer.Start(":8080"); err != nil {
+	if err := httpServer.Start(":8082"); err != nil {
 		log.Fatalf("服务器启动失败: %v", err)
 	}
 }

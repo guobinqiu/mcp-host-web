@@ -7,7 +7,7 @@
     },
     "ip-location-query": {
       "type": "http",
-      "command": "http://localhost:8080/mcp",
+      "command": "http://localhost:8082/mcp",
       "args": []
     }
   }

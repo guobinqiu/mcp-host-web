@@ -3,9 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -169,15 +167,24 @@ func (cc *ChatClient) ChatLoop(w http.ResponseWriter, r *http.Request) {
 			log.Printf("Failed to unmarshal: %v", err)
 			continue
 		}
+		// fmt.Println(recvMsg)
 
-		if err := cc.ProcessQuery(recvMsg.Content, ws); err != nil {
+		response, err := cc.ProcessQuery(recvMsg.Content)
+		if err != nil {
 			fmt.Printf("请求失败: %v\n", err)
 			continue
+		}
+
+		replyMsg := &chat.ChatMessage{}
+		replyMsg.Role = openai.ChatMessageRoleAssistant
+		replyMsg.Content = response
+		if buf, err := proto.Marshal(replyMsg); err == nil {
+			ws.WriteMessage(websocket.BinaryMessage, buf)
 		}
 	}
 }
 
-func (cc *ChatClient) ProcessQuery(userInput string, ws *websocket.Conn) error {
+func (cc *ChatClient) ProcessQuery(userInput string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -209,156 +216,115 @@ func (cc *ChatClient) ProcessQuery(userInput string, ws *websocket.Conn) error {
 		}
 	}
 
+	// 存储助理回复的消息
+	finalText := []string{}
+
 	// 首轮交互
 	cc.messages = append(cc.messages, openai.ChatCompletionMessage{
 		Role:    openai.ChatMessageRoleUser,
 		Content: userInput,
 	})
 
-	var build strings.Builder
-
-	type ToolCallBuilder struct {
-		Index     *int
-		ID        string
-		Name      string
-		Arguments strings.Builder
+	// 遍历每个mcpClient读取其对应的mcpServer上的工具告诉大模型
+	resp, err := cc.openaiClient.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
+		Model:    cc.model,
+		Messages: cc.messages,
+		Tools:    availableTools,
+	})
+	if err != nil {
+		return "", err
 	}
-	toolCalls := make(map[int]*ToolCallBuilder)
+	// fmt.Println(resp)
 
-OuterLoop:
-	for {
-		stream, err := cc.openaiClient.CreateChatCompletionStream(ctx, openai.ChatCompletionRequest{
-			Model:    cc.model,
-			Messages: cc.messages,
-			Tools:    availableTools,
-			Stream:   true,
-		})
-		if err != nil {
-			return err
-		}
-		defer stream.Close()
-		// fmt.Println(resp)
+	// OpenAI的API设计上支持一次请求返回多个候选回答（choices）默认为1
+	for _, choice := range resp.Choices {
 
-		for {
-			resp, err := stream.Recv()
+		// message.Content和message.ToolCalls二选一的关系
+		// 如果用户输入涉及需要调用工具，模型一般会返回 ToolCalls
+		// 否则直接返回 Content 作为文本回答
+		message := choice.Message
+
+		if message.Content != "" { // 若直接生成文本
+			finalText = append(finalText, message.Content)
+
+		} else if len(message.ToolCalls) > 0 { // 若调用工具
+			// 这个代码len(message.ToolCalls)永远为1
+			// 但如果一个MCP Server里注册了两个工具get_temperature和get_humidity
+			// 我问大模型: “我想调用xxx工具看一下今天的温度和湿度分别是多少?”message.ToolCalls就变2了
+			// 如果多个mcp server 一个注册get_temperature, 一个注册get_humidity
+			// 就要把ChatClient的mcpClient改成数组了 通过for循环每个mcpClient来列出所有可用工具给大模型
+			toolCallMessages := []openai.ChatCompletionMessage{}
+
+			for _, toolCall := range message.ToolCalls {
+				toolName := toolCall.Function.Name
+				toolArgsRaw := toolCall.Function.Arguments
+				// fmt.Println("=====toolCall.Function.Arguments:", toolArgsRaw)
+				var toolArgs map[string]any
+				_ = json.Unmarshal([]byte(toolArgsRaw), &toolArgs)
+
+				// 调用工具
+				req := mcp.CallToolRequest{}
+				req.Params.Name = toolName
+				req.Params.Arguments = toolArgs
+				//resp, err := cc.mcpClient.CallTool(ctx, req)
+				mcpClient := toolNameMap[toolName]
+				resp, err := mcpClient.CallTool(ctx, req)
+				if err != nil {
+					log.Printf("工具调用失败: %v", err)
+					continue
+				}
+
+				// 构造 tool message
+				// 把工具返回的答案记录下来，作为后续模型推理的输入
+				toolCallMessages = append(toolCallMessages, openai.ChatCompletionMessage{
+					Role:       openai.ChatMessageRoleTool, // 说明是工具的响应
+					ToolCallID: toolCall.ID,                // 绑定之前模型说要调用的那个 tool_call.id
+					Content:    fmt.Sprintf("%s", resp.Content),
+				})
+			}
+
+			// 下面这个顺序模拟了人机对话流程
+			// 助理说：“我已经调用了这些工具（toolCalls）”
+			// 然后工具返回了结果（toolCallMessages）
+
+			// 添加 assistant tool call 信息
+			cc.messages = append(cc.messages, openai.ChatCompletionMessage{
+				Role:      openai.ChatMessageRoleAssistant,
+				Content:   "",
+				ToolCalls: message.ToolCalls,
+			})
+
+			// 添加 tool 响应
+			cc.messages = append(cc.messages, toolCallMessages...)
+
+			// debug
+			// b, _ := json.MarshalIndent(cc.messages, "", "  ")
+			// fmt.Println("Sending messages to OpenAI:\n", string(b))
+
+			// 再次发送给模型
+			// 把助理声明调用了哪些工具（toolCalls）和这些工具的返回结果（toolCallMessages）一起发送给模型，
+			// 让模型基于工具的响应继续生成下一步的回复
+			nextResponse, err := cc.openaiClient.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
+				Model:    cc.model,
+				Messages: cc.messages,
+			})
 			if err != nil {
-				if errors.Is(err, io.EOF) {
-					log.Println("stream finished")
-					if build.Len() > 0 {
-						// 添加回答到历史消息
-						cc.messages = append(cc.messages, openai.ChatCompletionMessage{
-							Role:    openai.ChatMessageRoleAssistant,
-							Content: build.String(),
-						})
-
-						replyMsg := &chat.ChatMessage{
-							Role:    openai.ChatMessageRoleAssistant,
-							Content: build.String(),
-						}
-						buf, err := proto.Marshal(replyMsg)
-						if err != nil {
-							log.Printf("proto marshal error: %v", err)
-							continue
-						}
-
-						if err := ws.WriteMessage(websocket.BinaryMessage, buf); err != nil {
-							log.Printf("websocket write error: %v", err)
-							break
-						}
-						break OuterLoop
-					} else if len(toolCalls) > 0 {
-						toolCallMessages := []openai.ChatCompletionMessage{}
-						successfulToolCalls := []openai.ToolCall{}
-
-						for _, builder := range toolCalls {
-							fmt.Println("== Tool Call ==")
-							fmt.Println("ID:", builder.ID)
-							fmt.Println("Name:", builder.Name)
-							fmt.Println("Arguments:", builder.Arguments.String())
-							toolName := builder.Name
-							toolArgsRaw := builder.Arguments.String()
-							// fmt.Println("=====toolCall.Function.Arguments:", toolArgsRaw)
-							var toolArgs map[string]any
-							_ = json.Unmarshal([]byte(toolArgsRaw), &toolArgs)
-
-							// 调用工具
-							req := mcp.CallToolRequest{}
-							req.Params.Name = toolName
-							req.Params.Arguments = toolArgs
-							//resp, err := cc.mcpClient.CallTool(ctx, req)
-							mcpClient, ok := toolNameMap[toolName]
-							if !ok || mcpClient == nil {
-								log.Printf("工具 [%s] 没有找到对应的 MCP client", toolName)
-								continue
-							}
-							resp, err := mcpClient.CallTool(ctx, req)
-							if err != nil {
-								log.Printf("工具调用失败: %v", err)
-								continue
-							}
-
-							// 构造 tool message
-							// 把工具返回的答案记录下来，作为后续模型推理的输入
-							toolCallMessages = append(toolCallMessages, openai.ChatCompletionMessage{
-								Role:       openai.ChatMessageRoleTool, // 说明是工具的响应
-								ToolCallID: builder.ID,                 // 绑定之前模型说要调用的那个 tool_call.id
-								Content:    fmt.Sprintf("%s", resp.Content),
-							})
-
-							successfulToolCalls = append(successfulToolCalls, openai.ToolCall{
-								Index: builder.Index,
-								ID:    builder.ID,
-								Type:  openai.ToolTypeFunction,
-								Function: openai.FunctionCall{
-									Name:      builder.Name,
-									Arguments: builder.Arguments.String(),
-								},
-							})
-						}
-
-						// 添加 assistant tool call 信息
-						if len(successfulToolCalls) > 0 {
-							cc.messages = append(cc.messages, openai.ChatCompletionMessage{
-								Role:      openai.ChatMessageRoleAssistant,
-								Content:   "",
-								ToolCalls: successfulToolCalls,
-							})
-						}
-
-						// 把工具结果作为 observation 添加到上下文
-						if len(toolCallMessages) > 0 {
-							cc.messages = append(cc.messages, toolCallMessages...)
-						}
-						break
-					}
-				} else {
-					log.Printf("stream receive error: %v", err)
-					break OuterLoop
-				}
+				return "", err
 			}
 
-			for _, choice := range resp.Choices {
-				if choice.Delta.Content != "" { // 若直接生成文本
-					build.WriteString(choice.Delta.Content)
-				}
-
-				if len(choice.Delta.ToolCalls) > 0 { // 若调用工具
-					for _, tool := range choice.Delta.ToolCalls {
-						builder, exists := toolCalls[*tool.Index]
-						if !exists {
-							builder = &ToolCallBuilder{
-								Index: tool.Index,
-								ID:    tool.ID,
-								Name:  tool.Function.Name,
-							}
-							toolCalls[*tool.Index] = builder
-						}
-						builder.Arguments.WriteString(tool.Function.Arguments)
-					}
+			for _, nextChoice := range nextResponse.Choices {
+				if nextChoice.Message.Content != "" {
+					finalText = append(finalText, nextChoice.Message.Content)
 				}
 			}
 		}
 	}
 
-	return nil
+	// 把助理的所有回答合并成一个字符串，方便下一次调用时使用完整的对话上下文
+	response := strings.Join(finalText, "\n")
+	cc.messages = append(cc.messages, openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleAssistant,
+		Content: response,
+	})
+	return response, nil
 }
