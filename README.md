@@ -18,7 +18,7 @@ cd frontend && npm run serve
 
 ## 效果图
 
-<img width="363" alt="image" src="https://github.com/user-attachments/assets/c7cd91dd-bf51-4223-9d7f-d0c2dca1d381" />
+<img width="1506" height="202" alt="image" src="https://github.com/user-attachments/assets/2cd10284-fdd0-4d9f-afeb-6aa42fec21b8" />
 
 ## TODO
 
